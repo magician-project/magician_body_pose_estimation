@@ -38,7 +38,7 @@ pip install -r "$DPOSE_DIR/requirements.txt"
 # system site-packages are not visible inside an isolated venv.
 # empy must be <4: ROS uses the legacy `import em` API removed in empy 4.
 echo "Installing ROS Python compatibility packages..."
-pip install "empy==3.3.4" catkin_pkg lark
+pip install "empy==3.3.4" catkin_pkg lark transforms3d tf-transformations
 
 echo ""
 echo "=== Setup complete ==="

@@ -46,13 +46,19 @@ import cv2
 import math
 from loguru import logger
 
+# The script file shares its name with the installed ROS package, so Python
+# finds this .py file before the package when searching sys.path.  Remove the
+# script's own directory temporarily so the ROS-generated package wins.
+_script_dir_real = os.path.realpath(_SCRIPT_DIR)
+sys.path = [p for p in sys.path if os.path.realpath(p or '.') != _script_dir_real]
+
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
 from magician_body_pose_estimation.msg import Skeletons, Skeleton, Joint3D
 from geometry_msgs.msg import TransformStamped
 import tf2_ros
-import tf_transformations
+# import tf_transformations  # ROS apt package (ros-*-tf-transformations), not on PyPI — re-enable once installed
 
 # D-PoSE specific imports
 from train.core.tester import Tester
@@ -413,14 +419,14 @@ class PoseEstimationNode(Node):
 
         R = np.column_stack((x_axis, y_axis, z_axis))
 
-        q = tf_transformations.quaternion_from_matrix(
-            np.vstack((np.column_stack((R, [0,0,0])), [0,0,0,1])))
+        # q = tf_transformations.quaternion_from_matrix(  # needs ros-*-tf-transformations (apt), returns (x,y,z,w)
+        #     np.vstack((np.column_stack((R, [0,0,0])), [0,0,0,1])))
+        q = rotmat_to_quat(R)  # returns (w, x, y, z)
 
-        # Set orientation (assuming no rotation for joints)
-        t.transform.rotation.x = q[0]
-        t.transform.rotation.y = q[1]
-        t.transform.rotation.z = q[2]
-        t.transform.rotation.w = q[3]
+        t.transform.rotation.w = float(q[0])
+        t.transform.rotation.x = float(q[1])
+        t.transform.rotation.y = float(q[2])
+        t.transform.rotation.z = float(q[3])
         
         self.tf_broadcaster.sendTransform(t)
 
