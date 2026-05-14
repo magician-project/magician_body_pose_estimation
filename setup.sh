@@ -34,6 +34,12 @@ source "$VENV_DIR/bin/activate"
 pip install --upgrade pip
 pip install -r "$DPOSE_DIR/requirements.txt"
 
+# ROS Python runtime dependencies that the venv must supply itself because
+# system site-packages are not visible inside an isolated venv.
+# empy must be <4: ROS uses the legacy `import em` API removed in empy 4.
+echo "Installing ROS Python compatibility packages..."
+pip install "empy==3.3.4" catkin_pkg lark
+
 echo ""
 echo "=== Setup complete ==="
 echo ""
@@ -41,6 +47,6 @@ echo "To activate the environment for development:"
 echo "  source D-PoSE/venv/bin/activate"
 echo ""
 echo "To run the webcam demo:"
-echo "  source /opt/ros/humble/setup.bash"
+echo "  source /opt/ros/humble/setup.bash   # or /opt/ros/rolling/setup.bash"
 echo "  source D-PoSE/venv/bin/activate"
-echo "  python3 ros_demo_webcam.py"
+echo "  python3 magician_body_pose_estimation.py"
