@@ -38,6 +38,7 @@ if not os.path.isdir(_DPOSE_DIR):
     print("  python3 ros_demo_webcam.py")
     sys.exit(1)
 sys.path.insert(0, _DPOSE_DIR)
+os.chdir(_DPOSE_DIR)  # D-PoSE internals use relative paths (data/ckpt/...) so run from its directory
 # ---------------------------------------------------------------------------
 
 import torch
@@ -66,6 +67,21 @@ from train.utils.one_euro_filter import OneEuroFilter
 from multi_person_tracker import MPT
 from multi_person_tracker import Sort
 from aruco.aruco_create import detect_aruco_from_image
+
+def getCaptureDeviceFromPath(videoFilePath, videoWidth, videoHeight, videoFramerate=30):
+    if videoFilePath == 'webcam' or videoFilePath == '/dev/video0':
+        cap = cv2.VideoCapture(0)
+    elif videoFilePath.startswith('/dev/video'):
+        idx = int(videoFilePath.replace('/dev/video', ''))
+        cap = cv2.VideoCapture(idx)
+    else:
+        cap = cv2.VideoCapture(videoFilePath)
+    if hasattr(cap, 'set'):
+        cap.set(cv2.CAP_PROP_FPS, videoFramerate)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, videoWidth)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, videoHeight)
+    return cap
+
 
 # Set environment variables for OpenGL
 os.environ['PYOPENGL_PLATFORM'] = 'egl'
@@ -194,27 +210,22 @@ class PoseEstimationNode(Node):
     def _initialize_camera(self):
         """Initialize camera capture."""
         try:
-            self.get_logger().info(f'Initializing camera {self.args.camera_id}...')
-            self.cap = cv2.VideoCapture(self.args.camera_id)
-            
-            if not self.cap.isOpened():
-                raise RuntimeError(f"Cannot open camera {self.args.camera_id}")
-            
-            # Set camera properties
+            self.get_logger().info(f'Initializing camera {self.args.input}...')
+            self.cap = getCaptureDeviceFromPath(
+                self.args.input, self.args.width, self.args.height, self.args.fps
+            )
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self.cap.set(cv2.CAP_PROP_FPS, self.args.fps)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
-            
-            # Verify camera properties
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+
+            if not self.cap.isOpened():
+                raise RuntimeError(f"Cannot open camera {self.args.input}")
+
             actual_width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
             actual_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
             actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
-            
             self.get_logger().info(
-                f'Camera initialized: {actual_width}x{actual_height} @ {actual_fps} FPS'
+                f'Camera initialized: {int(actual_width)}x{int(actual_height)} @ {actual_fps} FPS'
             )
-            
         except Exception as e:
             self.get_logger().error(f'Failed to initialize camera: {e}')
             raise
@@ -583,8 +594,8 @@ def parse_arguments():
     
     # Camera configuration
     parser.add_argument(
-        '--camera-id', type=int, default=0,
-        help='Camera device ID (0 for default camera, 1 for external camera, etc.)'
+        '--input', type=str, default='/dev/video0',
+        help='Input device or file (e.g. /dev/video0, /dev/video8, webcam, or a video file path)'
     )
     parser.add_argument(
         '--width', type=int, default=1280,
