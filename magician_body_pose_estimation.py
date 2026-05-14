@@ -216,6 +216,10 @@ class PoseEstimationNode(Node):
             )
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+            # Re-apply resolution after FOURCC — setting MJPG can reset camera to a default resolution
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
+            self.cap.set(cv2.CAP_PROP_FPS, self.args.fps)
 
             if not self.cap.isOpened():
                 raise RuntimeError(f"Cannot open camera {self.args.input}")
@@ -249,8 +253,8 @@ class PoseEstimationNode(Node):
                 batch_size=4,
                 display=False,
                 detector_type='yolo',
-                output_format='list',
-                yolo_img_size=256
+                output_format='dict',
+                yolo_img_size=416
             )
             
             self.frame_number = 0
@@ -303,14 +307,11 @@ class PoseEstimationNode(Node):
             detection = self.mot.prepare_output_detections(detections)
             
             if len(detection[0]) > 0:
-                # Run pose estimation
-                if self.args.render:
-                    renderMesh = True
-                else:
-                    renderMesh = False
-                hmr_output = self.tester.run_on_single_image_tensor(frame, detection,render=renderMesh)
+                hmr_output = self.tester.run_on_single_image_tensor(frame, detection, render=True)
                 return track_bbs_ids, hmr_output
-            
+            else:
+                cv2.imshow('front', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
         return None, None
 
     def publish_skeletons(self, track_bbs_ids, hmr_output):
@@ -513,7 +514,9 @@ class PoseEstimationNode(Node):
                 
                 # Convert BGR to RGB
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
+                if frame.shape[1] != self.args.width or frame.shape[0] != self.args.height:
+                    frame = cv2.resize(frame, (self.args.width, self.args.height))
+
                 # Detect ArUco markers (for camera calibration)
                 if self.args.use_aruco:
                     rvec, tvec = detect_aruco_from_image(frame)
