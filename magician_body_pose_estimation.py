@@ -601,11 +601,11 @@ def parse_arguments():
         help='Input device or file (e.g. /dev/video0, /dev/video8, webcam, or a video file path)'
     )
     parser.add_argument(
-        '--width', type=int, default=1280,
+        '--width', type=int, default=1920,
         help='Camera capture width in pixels'
     )
     parser.add_argument(
-        '--height', type=int, default=720,
+        '--height', type=int, default=1080,
         help='Camera capture height in pixels'
     )
     parser.add_argument(
