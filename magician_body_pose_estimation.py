@@ -49,7 +49,7 @@ from loguru import logger
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from skeleton_msgs.msg import Skeletons, Skeleton, Joint3D
+from magician_body_pose_estimation.msg import Skeletons, Skeleton, Joint3D
 from geometry_msgs.msg import TransformStamped
 import tf2_ros
 import tf_transformations

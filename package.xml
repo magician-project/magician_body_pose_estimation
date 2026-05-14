@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<package format="2">
+<package format="3">
   <name>magician_body_pose_estimation</name>
   <version>0.0.1</version>
   <description>ROS wxPython wrapper for 3D body easy rosrun/roslaunch usage.</description>
@@ -9,14 +9,11 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <!-- Minimal runtime dependency to ensure python3 is present on target machines -->
-  <exec_depend>python3</exec_depend>
+  <build_depend>rosidl_default_generators</build_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
-  <!-- Optional (only if you want rosdep to pull these; keep/remove as you like)
-       Note: wxPython rosdep keys vary by distro/OS, so it's omitted here on purpose. -->
-  <!-- <exec_depend>python3-opencv</exec_depend> -->
-  <!-- <exec_depend>python3-numpy</exec_depend> -->
+  <exec_depend>python3</exec_depend>
 
   <export/>
 </package>
-
