@@ -165,6 +165,11 @@ class PoseEstimationNode(Node):
         # Initialize tracking and filtering
         self.tracker = Sort()
         self._last_no_detection_log = 0.0  # throttle "no human" warnings to once per 2 s
+        self._last_stats_log = 0.0
+        self._detection_was_active = False   # tracks state changes (detected → lost)
+        self._frames_with_detection = 0
+        self._frames_total = 0
+        self._first_frame_logged = False
         self.bbox_one_euro_filter = OneEuroFilter(
             np.zeros(4),
             np.zeros(4),
@@ -263,17 +268,40 @@ class PoseEstimationNode(Node):
             
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             self.get_logger().info(f'Using device: {device}')
-            
-            if not torch.cuda.is_available():
+
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0)
+                cc_major, cc_minor = torch.cuda.get_device_capability(0)
+                self.get_logger().info(
+                    f'GPU: {gpu_name} | compute capability: {cc_major}.{cc_minor} | '
+                    f'CUDA runtime: {torch.version.cuda} | PyTorch: {torch.__version__}'
+                )
+            else:
                 self.get_logger().warning('CUDA not available, using CPU (will be slower)')
-            
+
+            _hardcoded_detector = 'yolo'
+            if self.args.detector != _hardcoded_detector:
+                self.get_logger().warning(
+                    f'--detector={self.args.detector} was requested but MPT is hardcoded '
+                    f'to detector_type="{_hardcoded_detector}". '
+                    f'The --detector flag is currently ignored.'
+                )
+
+            _mot_yolo_size = 416
+            if self.args.yolo_img_size != _mot_yolo_size:
+                self.get_logger().warning(
+                    f'--yolo-img-size={self.args.yolo_img_size} was requested but MPT is '
+                    f'hardcoded to yolo_img_size={_mot_yolo_size}. '
+                    f'The --yolo-img-size flag is currently ignored.'
+                )
+
             self.mot = MPT(
                 device=device,
                 batch_size=4,
                 display=False,
-                detector_type='yolo',
+                detector_type=_hardcoded_detector,
                 output_format='dict',
-                yolo_img_size=416
+                yolo_img_size=_mot_yolo_size
             )
             
             self.frame_number = 0
@@ -296,18 +324,42 @@ class PoseEstimationNode(Node):
         # Detect persons in the frame
         with torch.cuda.amp.autocast(), torch.no_grad():
             input_tensor = torch.tensor(frame).permute(2, 0, 1).unsqueeze(0) / 255.0
+
+            if not self._first_frame_logged:
+                self.get_logger().info(
+                    f'First frame — input tensor: shape={list(input_tensor.shape)}, '
+                    f'dtype={input_tensor.dtype}, '
+                    f'value range=[{input_tensor.min().item():.3f}, {input_tensor.max().item():.3f}]'
+                )
+                self._first_frame_logged = True
+
             detection = self.mot.detector(input_tensor.cuda())
-            
+
             # Process detections
             if detection:
                 boxes = torch.cat([pred['boxes'] for pred in detection], dim=0)
                 scores = torch.cat([pred['scores'] for pred in detection], dim=0)
-                
+
+                # Check for person-class labels when the detector provides them (e.g. MaskRCNN)
+                if all('labels' in pred for pred in detection):
+                    labels = torch.cat([pred['labels'] for pred in detection], dim=0)
+                    person_boxes = (labels == 1).sum().item()  # COCO class 1 = person
+                    if person_boxes == 0 and len(labels) > 0:
+                        now = time.time()
+                        if now - self._last_no_detection_log >= 2.0:
+                            unique_classes = labels.unique().tolist()
+                            self.get_logger().warning(
+                                f'Detector found {len(labels)} box(es) but NONE are person-class (1). '
+                                f'Detected COCO classes: {unique_classes}. '
+                                'The model may be mis-configured or using wrong weights.'
+                            )
+                            self._last_no_detection_log = now
+
                 # Apply confidence threshold
                 mask = scores > self.args.detection_threshold
                 filtered_boxes = boxes[mask]
                 filtered_scores = scores[mask].unsqueeze(1)
-                
+
                 if filtered_boxes.numel() > 0:
                     dets = torch.cat([filtered_boxes, filtered_scores], dim=1).cpu().detach().numpy()
                 else:
@@ -317,7 +369,10 @@ class PoseEstimationNode(Node):
                         self.get_logger().warning(
                             f'No person detected above confidence threshold '
                             f'({self.args.detection_threshold}). '
-                            f'Raw detector returned {len(boxes)} box(es) — all below threshold.'
+                            f'Raw detector returned {len(boxes)} box(es) — all below threshold. '
+                            f'Score range: {scores.min().item():.3f}–{scores.max().item():.3f} '
+                            f'(mean {scores.mean().item():.3f}). '
+                            'Consider lowering --detection-threshold.'
                         )
                         self._last_no_detection_log = now
             else:
@@ -339,10 +394,27 @@ class PoseEstimationNode(Node):
             detections = [dets]
             detection = self.mot.prepare_output_detections(detections)
             
+            self._frames_total += 1
+
             if len(detection[0]) > 0:
+                self._frames_with_detection += 1
+                if not self._detection_was_active:
+                    self.get_logger().info(
+                        f'Human detected (frame {self._frames_total}). '
+                        f'Detection rate so far: '
+                        f'{self._frames_with_detection}/{self._frames_total} frames.'
+                    )
+                    self._detection_was_active = True
                 hmr_output = self.tester.run_on_single_image_tensor(frame, detection, render=True)
                 return track_bbs_ids, hmr_output
             else:
+                if self._detection_was_active:
+                    self.get_logger().warning(
+                        f'Human tracking lost (frame {self._frames_total}). '
+                        f'Detection rate so far: '
+                        f'{self._frames_with_detection}/{self._frames_total} frames.'
+                    )
+                    self._detection_was_active = False
                 now = time.time()
                 if now - self._last_no_detection_log >= 2.0:
                     self.get_logger().warning(
@@ -351,6 +423,12 @@ class PoseEstimationNode(Node):
                         f'(currently {self.args.detection_threshold}).'
                     )
                     self._last_no_detection_log = now
+                if now - self._last_stats_log >= 30.0:
+                    self.get_logger().info(
+                        f'Detection rate (last 30 s window): '
+                        f'{self._frames_with_detection}/{self._frames_total} frames had a human.'
+                    )
+                    self._last_stats_log = now
                 display_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 cv2.putText(
                     display_bgr,
@@ -567,6 +645,11 @@ class PoseEstimationNode(Node):
                 # Convert BGR to RGB
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 if frame.shape[1] != self.args.width or frame.shape[0] != self.args.height:
+                    self.get_logger().warning(
+                        f'Frame size mismatch: camera delivered {frame.shape[1]}x{frame.shape[0]} '
+                        f'but {self.args.width}x{self.args.height} was requested — resizing. '
+                        'This may reduce detection accuracy.'
+                    )
                     frame = cv2.resize(frame, (self.args.width, self.args.height))
 
                 # Detect ArUco markers (for camera calibration)
