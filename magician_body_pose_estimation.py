@@ -21,6 +21,7 @@ Author: D-PoSE Team
 
 import os
 import sys
+import time
 import argparse
 
 # --- D-PoSE dependency check ------------------------------------------------
@@ -207,32 +208,46 @@ class PoseEstimationNode(Node):
             self.get_logger().error(f'Failed to load D-PoSE model: {e}')
             raise
 
+    def _try_open_camera(self):
+        """Attempt a single camera open and return True on success."""
+        self.cap = getCaptureDeviceFromPath(
+            self.args.input, self.args.width, self.args.height, self.args.fps
+        )
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        # Re-apply resolution after FOURCC — setting MJPG can reset camera to a default resolution
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
+        self.cap.set(cv2.CAP_PROP_FPS, self.args.fps)
+        return self.cap.isOpened()
+
     def _initialize_camera(self):
-        """Initialize camera capture."""
-        try:
-            self.get_logger().info(f'Initializing camera {self.args.input}...')
-            self.cap = getCaptureDeviceFromPath(
-                self.args.input, self.args.width, self.args.height, self.args.fps
-            )
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-            # Re-apply resolution after FOURCC — setting MJPG can reset camera to a default resolution
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
-            self.cap.set(cv2.CAP_PROP_FPS, self.args.fps)
-
-            if not self.cap.isOpened():
+        """Initialize camera capture, retrying indefinitely when --insist-camera is set."""
+        retry_delay = 3.0
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                self.get_logger().info(
+                    f'Initializing camera {self.args.input} (attempt {attempt})...'
+                )
+                if self._try_open_camera():
+                    actual_width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                    actual_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                    actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
+                    self.get_logger().info(
+                        f'Camera initialized: {int(actual_width)}x{int(actual_height)} @ {actual_fps} FPS'
+                    )
+                    return
                 raise RuntimeError(f"Cannot open camera {self.args.input}")
-
-            actual_width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-            actual_height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-            actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
-            self.get_logger().info(
-                f'Camera initialized: {int(actual_width)}x{int(actual_height)} @ {actual_fps} FPS'
-            )
-        except Exception as e:
-            self.get_logger().error(f'Failed to initialize camera: {e}')
-            raise
+            except Exception as e:
+                self.get_logger().error(f'Failed to initialize camera: {e}')
+                if not getattr(self.args, 'insist_camera', False):
+                    raise
+                self.get_logger().info(
+                    f'--insist-camera: retrying in {retry_delay:.0f}s...'
+                )
+                time.sleep(retry_delay)
 
     def _initialize_tracker(self):
         """Initialize the multi-person tracker."""
@@ -637,6 +652,12 @@ def parse_arguments():
     parser.add_argument(
         '--use-aruco', action='store_true',
         help='Enable ArUco marker detection for camera calibration'
+    )
+
+    # Camera retry option
+    parser.add_argument(
+        '--insist-camera', action='store_true',
+        help='Retry camera initialization indefinitely (3 s delay between attempts) until it succeeds'
     )
     
     # Detector configuration (for compatibility)

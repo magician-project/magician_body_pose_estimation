@@ -11,7 +11,9 @@ source src/magician_body_pose_estimation/D-PoSE/venv/bin/activate
 source install/setup.bash 
 
 cd src/magician_body_pose_estimation
-python3 magician_body_pose_estimation.py $@
+
+#Specific invokation for Pilot PC 
+python3 magician_body_pose_estimation.py --use-aruco --display --insist-camera --input /dev/video4 $@
 
 
 exit 0
