@@ -287,25 +287,23 @@ class PoseEstimationNode(Node):
                     f'The --detector flag is currently ignored.'
                 )
 
-            _mot_yolo_size = 416
-            if self.args.yolo_img_size != _mot_yolo_size:
-                self.get_logger().warning(
-                    f'--yolo-img-size={self.args.yolo_img_size} was requested but MPT is '
-                    f'hardcoded to yolo_img_size={_mot_yolo_size}. '
-                    f'The --yolo-img-size flag is currently ignored.'
-                )
-
             self.mot = MPT(
                 device=device,
                 batch_size=4,
                 display=False,
                 detector_type=_hardcoded_detector,
                 output_format='dict',
-                yolo_img_size=_mot_yolo_size
+                yolo_img_size=self.args.yolo_img_size
             )
+            self.get_logger().info(f'YOLO input image size: {self.args.yolo_img_size}')
             
             self.frame_number = 0
             self.get_logger().info('Person tracker initialized successfully!')
+            if not self.args.render:
+                self.get_logger().warning(
+                    '--render was not passed: 3D mesh overlay is DISABLED. '
+                    "Pass --render to see the rendered skeleton in the 'front' OpenCV window."
+                )
             
         except Exception as e:
             self.get_logger().error(f'Failed to initialize tracker: {e}')
@@ -322,7 +320,7 @@ class PoseEstimationNode(Node):
             tuple: (detections, hmr_output) or (None, None) if no persons detected
         """
         # Detect persons in the frame
-        with torch.cuda.amp.autocast(), torch.no_grad():
+        with torch.amp.autocast('cuda'), torch.no_grad():
             input_tensor = torch.tensor(frame).permute(2, 0, 1).unsqueeze(0) / 255.0
 
             if not self._first_frame_logged:
@@ -366,13 +364,19 @@ class PoseEstimationNode(Node):
                     dets = np.empty((0, 5))
                     now = time.time()
                     if now - self._last_no_detection_log >= 2.0:
+                        if scores.numel() > 0:
+                            score_info = (
+                                f'Score range: {scores.min().item():.3f}–{scores.max().item():.3f} '
+                                f'(mean {scores.mean().item():.3f}). '
+                                'Consider lowering --detection-threshold.'
+                            )
+                        else:
+                            score_info = 'Detector returned prediction dicts with no boxes inside.'
                         self.get_logger().warning(
                             f'No person detected above confidence threshold '
                             f'({self.args.detection_threshold}). '
                             f'Raw detector returned {len(boxes)} box(es) — all below threshold. '
-                            f'Score range: {scores.min().item():.3f}–{scores.max().item():.3f} '
-                            f'(mean {scores.mean().item():.3f}). '
-                            'Consider lowering --detection-threshold.'
+                            + score_info
                         )
                         self._last_no_detection_log = now
             else:
@@ -405,7 +409,7 @@ class PoseEstimationNode(Node):
                         f'{self._frames_with_detection}/{self._frames_total} frames.'
                     )
                     self._detection_was_active = True
-                hmr_output = self.tester.run_on_single_image_tensor(frame, detection, render=True)
+                hmr_output = self.tester.run_on_single_image_tensor(frame, detection, render=self.args.render)
                 return track_bbs_ids, hmr_output
             else:
                 if self._detection_was_active:
@@ -671,16 +675,8 @@ class PoseEstimationNode(Node):
                     if self.args.use_aruco:
                         self.publish_aruco_transforms(current_time)
                 
-                # Display frame (optional)
-                if self.args.display:
-                    display_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                    cv2.imshow('D-PoSE Webcam Demo', display_frame)
-                    
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        self.get_logger().info('Quit requested by user')
-                        break
-                # Process ROS callbacks
-                    # Required to actually update OpenCV window
+                # Pump the OpenCV event loop so the 'front' window (managed by D-PoSE
+                # tester) actually refreshes on screen.
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     self.get_logger().info('Quit requested by user')
                     break
@@ -701,8 +697,7 @@ class PoseEstimationNode(Node):
         if hasattr(self, 'cap') and self.cap.isOpened():
             self.cap.release()
         
-        if self.args.display:
-            cv2.destroyAllWindows()
+        cv2.destroyAllWindows()
         
         if hasattr(self, 'tester') and hasattr(self.tester, 'model'):
             del self.tester.model
