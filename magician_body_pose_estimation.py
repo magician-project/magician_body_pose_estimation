@@ -209,7 +209,7 @@ class PoseEstimationNode(Node):
             raise
 
     def _try_open_camera(self):
-        """Attempt a single camera open and return True on success."""
+        """Attempt a single camera open and test-grab a frame; return True on success."""
         self.cap = getCaptureDeviceFromPath(
             self.args.input, self.args.width, self.args.height, self.args.fps
         )
@@ -219,7 +219,10 @@ class PoseEstimationNode(Node):
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
         self.cap.set(cv2.CAP_PROP_FPS, self.args.fps)
-        return self.cap.isOpened()
+        if not self.cap.isOpened():
+            return False
+        ret, _ = self.cap.read()
+        return ret
 
     def _initialize_camera(self):
         """Initialize camera capture, retrying indefinitely when --insist-camera is set."""
