@@ -9,7 +9,7 @@ echo "=== D-PoSE Setup ==="
 
 # Clone D-PoSE webcam branch if not present
 if [ -d "$DPOSE_DIR/.git" ]; then
-    echo "D-PoSE already cloned — pulling latest..."
+    echo "D-PoSE already cloned β pulling latest..."
     git -C "$DPOSE_DIR" pull
 else
     if [ -e "$DPOSE_DIR" ]; then
@@ -34,6 +34,14 @@ source "$VENV_DIR/bin/activate"
 pip install --upgrade pip
 pip install -r "$DPOSE_DIR/requirements.txt"
 
+#Pilot PC quirks
+#python3 -m pip install --upgrade pip setuptools wheel
+#python3 -m pip install numpy==1.23.5 scipy==1.9.3 six
+#python3 -m pip install -U "coverage>=7.6.1"
+#python3 -m pip uninstall -y torch torchvision torchaudio
+#python3 -m pip install --upgrade pip
+#python3 -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
 # ROS Python runtime dependencies that the venv must supply itself because
 # system site-packages are not visible inside an isolated venv.
 # empy must be <4: ROS uses the legacy `import em` API removed in empy 4.
@@ -50,3 +58,4 @@ echo "To run the webcam demo:"
 echo "  source /opt/ros/humble/setup.bash   # or /opt/ros/rolling/setup.bash"
 echo "  source D-PoSE/venv/bin/activate"
 echo "  python3 magician_body_pose_estimation.py"
+

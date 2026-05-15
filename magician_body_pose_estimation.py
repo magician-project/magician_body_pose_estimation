@@ -609,7 +609,7 @@ def parse_arguments():
         help='Camera capture height in pixels'
     )
     parser.add_argument(
-        '--fps', type=int, default=13,
+        '--fps', type=int, default=15,
         help='Camera capture frame rate'
     )
     
