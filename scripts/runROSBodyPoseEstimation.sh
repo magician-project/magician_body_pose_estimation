@@ -13,7 +13,7 @@ source install/setup.bash
 cd src/magician_body_pose_estimation
 
 #Specific invokation for Pilot PC 
-python3 magician_body_pose_estimation.py --use-aruco --display --insist-camera --input /dev/video4 $@
+python3 magician_body_pose_estimation.py --use-aruco --display --render --insist-camera --input /dev/video4 $@
 
 
 exit 0
