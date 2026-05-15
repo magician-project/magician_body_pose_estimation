@@ -164,6 +164,7 @@ class PoseEstimationNode(Node):
         
         # Initialize tracking and filtering
         self.tracker = Sort()
+        self._last_no_detection_log = 0.0  # throttle "no human" warnings to once per 2 s
         self.bbox_one_euro_filter = OneEuroFilter(
             np.zeros(4),
             np.zeros(4),
@@ -311,8 +312,22 @@ class PoseEstimationNode(Node):
                     dets = torch.cat([filtered_boxes, filtered_scores], dim=1).cpu().detach().numpy()
                 else:
                     dets = np.empty((0, 5))
+                    now = time.time()
+                    if now - self._last_no_detection_log >= 2.0:
+                        self.get_logger().warning(
+                            f'No person detected above confidence threshold '
+                            f'({self.args.detection_threshold}). '
+                            f'Raw detector returned {len(boxes)} box(es) — all below threshold.'
+                        )
+                        self._last_no_detection_log = now
             else:
                 dets = np.empty((0, 5))
+                now = time.time()
+                if now - self._last_no_detection_log >= 2.0:
+                    self.get_logger().warning(
+                        'No person detected: detector returned no boxes for this frame.'
+                    )
+                    self._last_no_detection_log = now
             
             # Update tracker
             if dets.shape[0] > 0:
@@ -328,7 +343,26 @@ class PoseEstimationNode(Node):
                 hmr_output = self.tester.run_on_single_image_tensor(frame, detection, render=True)
                 return track_bbs_ids, hmr_output
             else:
-                cv2.imshow('front', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                now = time.time()
+                if now - self._last_no_detection_log >= 2.0:
+                    self.get_logger().warning(
+                        'No human detected after tracking — skipping pose estimation. '
+                        'Check lighting, camera angle, or lower --detection-threshold '
+                        f'(currently {self.args.detection_threshold}).'
+                    )
+                    self._last_no_detection_log = now
+                display_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                cv2.putText(
+                    display_bgr,
+                    'No human detected',
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2,
+                    (0, 0, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.imshow('front', display_bgr)
 
         return None, None
 
