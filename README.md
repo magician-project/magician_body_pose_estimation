@@ -1,4 +1,4 @@
-# magician_body_pose_estimation
+# Magician Body Pose Estimation
 
 A ROS2 package for real-time 3D human body pose estimation using [D-PoSE](https://github.com/AmmarkoV/D-PoSE). It captures frames from a webcam, detects and tracks people with YOLO + SORT, runs the D-PoSE model to estimate 3D skeleton pose, and publishes the results as ROS2 messages and TF transforms.
 
