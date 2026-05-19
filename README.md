@@ -9,6 +9,12 @@ A ROS2 package for real-time 3D human body pose estimation using [D-PoSE](https:
 | ![Demo 1](doc/demo_1.jpeg) | ![Demo 2](doc/demo_2.jpeg) |
 | ![Demo 3](doc/demo_3.jpeg) | ![Demo 4](doc/demo_4.jpeg) |
 
+### Learning Examples
+
+| | | |
+|---|---|---|
+| ![Learning 1](doc/learning_1.jpg) | ![Learning 2](doc/learning_2.jpg) | ![Learning 3](doc/learning_3.jpg) |
+
 ## Requirements
 
 - ROS2 Humble (or later)
