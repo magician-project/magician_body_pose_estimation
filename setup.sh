@@ -17,8 +17,10 @@ else
         echo "Remove or rename it first, then re-run this script."
         exit 1
     fi
-    echo "Cloning D-PoSE (webcam branch)..."
-    git clone --branch webcam https://github.com/AmmarkoV/D-PoSE "$DPOSE_DIR"
+    #echo "Cloning D-PoSE (webcam branch)..."
+    #git clone --branch webcam https://github.com/AmmarkoV/D-PoSE "$DPOSE_DIR"
+    echo "Cloning D-PoSE..."
+    git clone https://github.com/AmmarkoV/D-PoSE "$DPOSE_DIR"
 fi
 
 # Create venv inside D-PoSE

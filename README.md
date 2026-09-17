@@ -68,7 +68,25 @@ bash src/magician_body_pose_estimation/scripts/runROSBodyPoseEstimation.sh
 | `--fps` | `15` | Camera capture frame rate |
 | `--render` | off | Render the 3D mesh overlay in the OpenCV window |
 | `--display` | off | Show real-time video window (press `q` to quit) |
-| `--use-aruco` | off | Enable ArUco marker detection for camera-to-world calibration |
+| `--use-aruco` / `--no-use-aruco` | on | Enable ArUco marker detection for camera-to-world calibration. Skeletons are then published w.r.t. the marker |
+| `--aruco-marker-id` | any | Only use this marker ID (`DICT_6X6_250`) as the skeleton reference |
+| `--aruco-marker-length` | `0.15` | Printed marker side length in meters |
+| `--aruco-parent-frame` | `wood_panel` | TF parent frame the marker is mounted on |
+| `--aruco-xyz` | `0.1055 1.405 -0.1025` | Marker position in the parent frame (m) |
+| `--aruco-rpy` | `90 0 180` | Marker orientation in the parent frame (deg, fixed-axis roll X, pitch Y, yaw Z) |
+| `--fx` `--fy` `--cx` `--cy` | `800 800 320 240` | Camera intrinsics in pixels at `--width` x `--height` (ArUco pose) |
+| `--dist-coeffs` | none | Lens distortion coefficients `k1 k2 p1 p2 [k3 ...]` |
+| `--static-camera` | off | Camera never moves: average marker observations per slider position, skip detection once converged, and keep publishing through occlusion |
+| `--static-robot` | off | Robot never moves along its slider: average everything into one position, no slider topic needed |
+| `--slider-topic` | `/slider/position_y` | `std_msgs/Float64` topic with the robot slider position in meters |
+| `--slider-bin` | `0.01` | Slider positions this far apart (m) share one averaged marker pose |
+| `--marker-table-file` | `<output-folder>/aruco_marker_table.json` | Where learned marker poses are saved on shutdown and reloaded on start |
+| `--marker-min-samples` | `30` | Observations before a position is trusted enough to skip detection |
+| `--marker-spread-threshold` | `0.01` | Required accuracy (m) of the averaged marker position |
+| `--marker-recheck-interval` | `5.0` | How often (s) a converged position is re-detected, to catch a bumped camera |
+| `--no-marker-line-fit` | fit on | Never interpolate between slider positions; by default a line is fitted through the learned positions so unvisited ones are predicted |
+| `--marker-fit-residual` | `0.02` | Largest residual (m) the rail line fit may have before interpolation is refused |
+| `--marker-alarm-pct` | `5.0` | After loading from disk, warn while live observations disagree by more than this percentage of the marker distance |
 | `--insist-camera` | off | Retry camera initialization indefinitely (3 s between attempts) |
 | `--detection-threshold` | `0.7` | Person detection confidence threshold (0.0–1.0) |
 | `--detector` | `yolo` | Object detector (`yolo` or `maskrcnn`) |
@@ -122,7 +140,7 @@ The CSV contains one row per skeleton per frame, with columns `frame_id`, `skele
 
 The node publishes a TF transform from `Camera` → `human_<id>` for each tracked person. The orientation is derived from the pelvis, hips, and neck joints.
 
-When `--use-aruco` is active, additional transforms are published: `wood_panel` → `Aruco_marker` → `Camera`.
+When `--use-aruco` is active, additional transforms are published: `<aruco-parent-frame>` → `Aruco_marker` → `Camera`. The `/humans` joints and the `human_<id>` frames are then expressed in the `Aruco_marker` frame (X right, Y up along the printed marker, Z out of the marker), and no skeletons are published until the marker has been seen.
 
 ### Custom Messages
 

@@ -59,6 +59,7 @@ import rclpy
 from rclpy.node import Node
 from magician_body_pose_estimation.msg import Skeletons, Skeleton, Joint3D
 from geometry_msgs.msg import TransformStamped
+from std_msgs.msg import Float64
 import tf2_ros
 # import tf_transformations  # ROS apt package (ros-*-tf-transformations), not on PyPI — re-enable once installed
 
@@ -68,6 +69,7 @@ from train.utils.one_euro_filter import OneEuroFilter
 from multi_person_tracker import MPT
 from multi_person_tracker import Sort
 from aruco.aruco_create import detect_aruco_from_image
+from aruco.marker_pose_table import MarkerPoseTable, install_exit_hooks
 
 def getCaptureDeviceFromPath(videoFilePath, videoWidth, videoHeight, videoFramerate=30):
     if videoFilePath == 'webcam' or videoFilePath == '/dev/video0':
@@ -189,6 +191,7 @@ class PoseEstimationNode(Node):
         # ArUco detection state
         self.first_rvec = None
         self.first_tvec = None
+        self._initialize_marker_table()
         
         self.get_logger().info('D-PoSE Webcam Node initialized successfully!')
 
@@ -465,18 +468,30 @@ class PoseEstimationNode(Node):
         
         current_time = self.get_clock().now().to_msg()
         
+        marker_R = None
+        marker_t = None
+        if self.args.use_aruco:
+            if self.first_rvec is None or self.first_tvec is None:
+                self.get_logger().warning(
+                    'No ArUco marker pose yet, not publishing skeletons',
+                    throttle_duration_sec=2.0,
+                )
+                return
+            marker_R = cv2.Rodrigues(self.first_rvec)[0]
+            marker_t = self.first_tvec.reshape(3)
+        
         for i in range(len(track_bbs_ids)):
             human = Skeleton()
             human.id = int(track_bbs_ids[i][-1])
             human.joints = []
             
-            # Get joints for this person
-            joints = hmr_joints[i]
-            
-            # Apply camera translation to joints
-            joints[0, 0] += camera_translation[i, 0]
-            joints[0, 1] += camera_translation[i, 1]
-            joints[0, 2] += camera_translation[i, 2]
+            # Get joints for this person in the camera frame
+            # (OpenCV axes: x right, y down, z forward)
+            joints = hmr_joints[i] + camera_translation[i]
+
+            # Express joints w.r.t. the ArUco marker: p_marker = R^T (p_camera - t)
+            if marker_R is not None:
+                joints = (joints - marker_t) @ marker_R
 
             # Convert joints to ROS message format
             for j, joint in enumerate(joints):
@@ -538,7 +553,7 @@ class PoseEstimationNode(Node):
         """
         t = TransformStamped()
         t.header.stamp = timestamp
-        t.header.frame_id = 'Camera'
+        t.header.frame_id = 'Aruco_marker' if self.args.use_aruco else 'Camera'
         # t.child_frame_id = f'human_{human_id}_joint_{joint_id}'
         t.child_frame_id = f'human_{human_id}'
         
@@ -546,7 +561,7 @@ class PoseEstimationNode(Node):
         t.transform.translation.y = human.joints[0].y
         t.transform.translation.z = human.joints[0].z
         
-        pelvis = np.array([0.0,0.0,0.0])
+        pelvis = np.array([human.joints[0].x, human.joints[0].y, human.joints[0].z])
         left_hip = np.array([human.joints[1].x, human.joints[1].y, human.joints[1].z])
         right_hip = np.array([human.joints[2].x, human.joints[2].y, human.joints[2].z])
         neck = np.array([human.joints[12].x, human.joints[12].y, human.joints[12].z])
@@ -560,7 +575,7 @@ class PoseEstimationNode(Node):
         y_axis = np.cross(z_axis, x_axis)
         y_axis /= np.linalg.norm(y_axis)
 
-        x_axis = np.cross(z_axis, y_axis)
+        x_axis = np.cross(y_axis, z_axis)
         x_axis /= np.linalg.norm(x_axis)
 
         R = np.column_stack((x_axis, y_axis, z_axis))
@@ -576,6 +591,38 @@ class PoseEstimationNode(Node):
         
         self.tf_broadcaster.sendTransform(t)
 
+    def _initialize_marker_table(self):
+        """Set up the averaged marker poses and the slider subscription."""
+        table_file = self.args.marker_table_file or os.path.join(
+            self.args.output_folder, 'aruco_marker_table.json')
+        self.marker_table = MarkerPoseTable(
+            static_camera=self.args.static_camera,
+            static_robot=self.args.static_robot,
+            bin_size=self.args.slider_bin,
+            min_samples=self.args.marker_min_samples,
+            spread_threshold=self.args.marker_spread_threshold,
+            recheck_interval=self.args.marker_recheck_interval,
+            alarm_pct=self.args.marker_alarm_pct,
+            line_fit=self.args.marker_line_fit,
+            fit_residual=self.args.marker_fit_residual,
+            table_file=table_file,
+            logger=self.get_logger(),
+        )
+
+        if not (self.args.use_aruco and self.args.static_camera):
+            return
+
+        install_exit_hooks(self.marker_table)
+        if self.args.static_robot:
+            self.get_logger().info('Static robot: averaging all marker observations '
+                                   'into a single slider position')
+        else:
+            self.slider_subscription = self.create_subscription(
+                Float64, self.args.slider_topic,
+                lambda msg: self.marker_table.set_slider(float(msg.data)), 10)
+            self.get_logger().info(
+                f'Averaging marker poses per slider position from {self.args.slider_topic}')
+
     # TODO: Move this to the robot side (so no fixed envirnoment components are present here)
     def publish_aruco_transforms(self, timestamp):
         """
@@ -587,17 +634,23 @@ class PoseEstimationNode(Node):
         # Publish base ArUco transform
         t = TransformStamped()
         t.header.stamp = timestamp
-        t.header.frame_id = 'wood_panel'
+        t.header.frame_id = self.args.aruco_parent_frame
         t.child_frame_id = 'Aruco_marker'
         
-        t.transform.translation.x = 0.1055
-        t.transform.translation.y = 1.405
-        t.transform.translation.z = -0.1025
+        t.transform.translation.x = self.args.aruco_xyz[0]
+        t.transform.translation.y = self.args.aruco_xyz[1]
+        t.transform.translation.z = self.args.aruco_xyz[2]
         
-        t.transform.rotation.x = 0.0
-        t.transform.rotation.y = -0.7071068
-        t.transform.rotation.z = -0.7071068
-        t.transform.rotation.w = 0.0
+        # Fixed-axis roll (X), pitch (Y), yaw (Z): R = Rz(yaw) Ry(pitch) Rx(roll)
+        roll, pitch, yaw = (degrees_to_radians(a) for a in self.args.aruco_rpy)
+        Rx = np.array([[1, 0, 0], [0, math.cos(roll), -math.sin(roll)], [0, math.sin(roll), math.cos(roll)]])
+        Ry = np.array([[math.cos(pitch), 0, math.sin(pitch)], [0, 1, 0], [-math.sin(pitch), 0, math.cos(pitch)]])
+        Rz = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
+        q = rotmat_to_quat(Rz @ Ry @ Rx)  # returns (w, x, y, z)
+        t.transform.rotation.w = float(q[0])
+        t.transform.rotation.x = float(q[1])
+        t.transform.rotation.y = float(q[2])
+        t.transform.rotation.z = float(q[3])
         
         self.tf_broadcaster.sendTransform(t)
         
@@ -658,9 +711,22 @@ class PoseEstimationNode(Node):
 
                 # Detect ArUco markers (for camera calibration)
                 if self.args.use_aruco:
-                    rvec, tvec = detect_aruco_from_image(frame)
-                    if rvec is not None and tvec is not None:
-                        self.first_rvec, self.first_tvec = rvec, tvec
+                    if self.marker_table.should_detect():
+                        rvec, tvec = detect_aruco_from_image(
+                            frame,
+                            marker_id=self.args.aruco_marker_id,
+                            fx=self.args.fx, fy=self.args.fy,
+                            cx=self.args.cx, cy=self.args.cy,
+                            dist_coeffs=self.args.dist_coeffs,
+                            marker_length=self.args.aruco_marker_length,
+                            # frame was already converted to RGB above
+                            input_is_bgr=False,
+                        )
+                        if rvec is not None and tvec is not None:
+                            self.marker_table.add(rvec, tvec)
+                    estimate = self.marker_table.estimate()
+                    if estimate is not None:
+                        self.first_rvec, self.first_tvec = estimate
                 
                 # Process frame for pose estimation
                 track_bbs_ids, hmr_output = self.process_frame(frame)
@@ -701,6 +767,8 @@ class PoseEstimationNode(Node):
         
         if hasattr(self, 'tester') and hasattr(self.tester, 'model'):
             del self.tester.model
+        
+        self.marker_table.save()
         
         logger.info('================= END =================')
         self.get_logger().info('Cleanup completed')
@@ -765,8 +833,107 @@ def parse_arguments():
     
     # ArUco marker options
     parser.add_argument(
-        '--use-aruco', action='store_true',
-        help='Enable ArUco marker detection for camera calibration'
+        '--use-aruco', action=argparse.BooleanOptionalAction, default=True,
+        help='Enable ArUco marker detection for camera calibration. Pass '
+             '--no-use-aruco to disable and publish in the raw camera frame'
+    )
+    parser.add_argument(
+        '--aruco-marker-id', type=int, default=None,
+        help='Only use this ArUco marker ID (DICT_6X6_250) as the skeleton '
+             'reference, e.g. 1. Other markers are ignored. Default: any marker'
+    )
+    parser.add_argument(
+        '--aruco-marker-length', type=float, default=0.15,
+        help='Printed ArUco marker side length in meters (black border edge to edge). '
+             'Scales the estimated camera translation'
+    )
+    parser.add_argument(
+        '--aruco-parent-frame', type=str, default='wood_panel',
+        help='TF parent frame the ArUco marker is mounted on'
+    )
+    parser.add_argument(
+        '--aruco-xyz', type=float, nargs=3, default=[0.1055, 1.405, -0.1025],
+        metavar=('X', 'Y', 'Z'),
+        help='ArUco marker position in the parent frame, in meters'
+    )
+    parser.add_argument(
+        '--aruco-rpy', type=float, nargs=3, default=[90.0, 0.0, 180.0],
+        metavar=('ROLL', 'PITCH', 'YAW'),
+        help='ArUco marker orientation in the parent frame, in degrees '
+             '(fixed-axis roll about X, then pitch about Y, then yaw about Z). '
+             'Marker axes: X right, Y up along the printed marker, Z out of the marker'
+    )
+    
+    parser.add_argument(
+        '--static-camera', action='store_true',
+        help='The camera never moves, so the marker pose only changes when the robot '
+             'does. Marker observations are then averaged per slider position, which '
+             'removes detection noise, survives occlusion and lets detection be skipped '
+             'once a position has converged'
+    )
+    parser.add_argument(
+        '--static-robot', action='store_true',
+        help='The robot never moves along its slider, so all observations belong to a '
+             'single position and the slider topic is not needed (implies a slider of 0)'
+    )
+    parser.add_argument(
+        '--slider-topic', type=str, default='/slider/position_y',
+        help='std_msgs/Float64 topic carrying the robot slider position in meters'
+    )
+    parser.add_argument(
+        '--slider-bin', type=float, default=0.01,
+        help='Slider positions this far apart (meters) share one averaged marker pose'
+    )
+    parser.add_argument(
+        '--marker-table-file', type=str, default='',
+        help='Where the averaged marker poses are saved on shutdown and reloaded from '
+             'on start. Default: <output-folder>/aruco_marker_table.json'
+    )
+    parser.add_argument(
+        '--marker-min-samples', type=int, default=30,
+        help='Observations a slider position needs before its averaged marker pose is '
+             'trusted enough to skip detection'
+    )
+    parser.add_argument(
+        '--marker-spread-threshold', type=float, default=0.01,
+        help='Maximum spread (standard deviation, meters) of the averaged marker '
+             'position for it to count as converged'
+    )
+    parser.add_argument(
+        '--marker-recheck-interval', type=float, default=5.0,
+        help='Once converged, how often (seconds) the marker is detected again to '
+             'catch a bumped camera'
+    )
+    parser.add_argument(
+        '--no-marker-line-fit', dest='marker_line_fit', action='store_false',
+        help='Do not fit a straight line through the learned slider positions. By '
+             'default the marker pose at a slider position that was never visited is '
+             'interpolated from that line, which never overrides a position that has '
+             'been measured directly'
+    )
+    parser.add_argument(
+        '--marker-fit-residual', type=float, default=0.02,
+        help='Largest residual (meters) the rail line fit may have before '
+             'interpolation is refused, e.g. because the slider is not metric or the '
+             'marker moved on its mount'
+    )
+    parser.add_argument(
+        '--marker-alarm-pct', type=float, default=5.0,
+        help='After loading poses from disk, warn while live observations disagree by '
+             'more than this percentage of the marker distance (possible tampering '
+             'while the node was down)'
+    )
+    
+    # Camera intrinsics (used for ArUco pose estimation, at --width x --height)
+    parser.add_argument('--fx', type=float, default=800.0, help='Camera focal length x in pixels')
+    parser.add_argument('--fy', type=float, default=800.0, help='Camera focal length y in pixels')
+    parser.add_argument('--cx', type=float, default=320.0, help='Camera principal point x in pixels')
+    parser.add_argument('--cy', type=float, default=240.0, help='Camera principal point y in pixels')
+    parser.add_argument(
+        '--dist-coeffs', type=float, nargs='+', default=None,
+        metavar='K',
+        help='Lens distortion coefficients in OpenCV order (k1 k2 p1 p2 [k3 ...]). '
+             'Default: no distortion'
     )
 
     # Camera retry option
