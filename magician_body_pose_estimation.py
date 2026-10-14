@@ -464,7 +464,7 @@ class PoseEstimationNode(Node):
         
         # Extract 3D joints and camera translation
         hmr_joints = hmr_output['joints3d'][:, 0:22, :].cpu().numpy()
-        camera_translation = hmr_output['pred_cam_t'].cpu().numpy() * 0.5
+        camera_translation = hmr_output['pred_cam_t'].cpu().numpy() # * 0.5
         
         current_time = self.get_clock().now().to_msg()
         
