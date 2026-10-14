@@ -733,13 +733,14 @@ class PoseEstimationNode(Node):
                 
                 current_time = self.get_clock().now().to_msg()
                 
+                # Publish ArUco transforms. The camera pose depends only on the
+                # marker, so it is published every frame, with or without a human.
+                if self.args.use_aruco:
+                    self.publish_aruco_transforms(current_time)
+                
                 if track_bbs_ids is not None and hmr_output is not None:
                     # Publish skeleton data
                     self.publish_skeletons(track_bbs_ids, hmr_output)
-                    
-                    # Publish ArUco transforms
-                    if self.args.use_aruco:
-                        self.publish_aruco_transforms(current_time)
                 
                 # Pump the OpenCV event loop so the 'front' window (managed by D-PoSE
                 # tester) actually refreshes on screen.
