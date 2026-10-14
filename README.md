@@ -134,7 +134,7 @@ The CSV contains one row per skeleton per frame, with columns `frame_id`, `skele
 
 | Topic | Type | Description |
 |---|---|---|
-| `/humans` | `magician_body_pose_estimation/Skeletons` | All detected and tracked skeletons |
+| `/humans` | `skeleton_msgs/Skeletons` | All detected and tracked skeletons |
 
 ### TF Frames
 
@@ -142,7 +142,9 @@ The node publishes a TF transform from `Camera` → `human_<id>` for each tracke
 
 When `--use-aruco` is active, additional transforms are published: `<aruco-parent-frame>` → `Aruco_marker` → `Camera`. The `/humans` joints and the `human_<id>` frames are then expressed in the `Aruco_marker` frame (X right, Y up along the printed marker, Z out of the marker), and no skeletons are published until the marker has been seen.
 
-### Custom Messages
+### Skeleton Messages
+
+These interfaces are provided by the `skeleton_msgs` package:
 
 **`Joint3D`** — a single 3D joint position:
 ```
@@ -154,7 +156,7 @@ float64 z
 **`Skeleton`** — one tracked person:
 ```
 Joint3D[] joints   # 22 joints in D-PoSE body model order
-uint32   id        # Unique tracking ID (persistent across frames)
+int16    id        # Unique tracking ID (persistent across frames)
 ```
 
 **`Skeletons`** — all people in the scene:
@@ -171,10 +173,6 @@ magician_body_pose_estimation/
 ├── scripts/
 │   ├── runROSBodyPoseEstimation.sh    # Launch script for the workspace
 │   └── bodyPoseEstimationToCSV.sh     # Export video → _3DBody.csv
-├── msg/
-│   ├── Joint3D.msg
-│   ├── Skeleton.msg
-│   └── Skeletons.msg
 ├── doc/                               # Example screenshots
 └── package.xml
 ```
