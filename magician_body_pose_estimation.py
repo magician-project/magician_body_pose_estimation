@@ -57,7 +57,7 @@ sys.path = [p for p in sys.path if os.path.realpath(p or '.') != _script_dir_rea
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from magician_body_pose_estimation.msg import Skeletons, Skeleton, Joint3D
+from skeleton_msgs.msg import Skeletons, Skeleton, Joint3D
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Float64
 import tf2_ros
@@ -849,11 +849,11 @@ def parse_arguments():
              'Scales the estimated camera translation'
     )
     parser.add_argument(
-        '--aruco-parent-frame', type=str, default='wood_panel',
+        '--aruco-parent-frame', type=str, default='base_link',
         help='TF parent frame the ArUco marker is mounted on'
     )
     parser.add_argument(
-        '--aruco-xyz', type=float, nargs=3, default=[0.1055, 1.405, -0.1025],
+        '--aruco-xyz', type=float, nargs=3, default=[0.1055, 0.405, -0.1025],
         metavar=('X', 'Y', 'Z'),
         help='ArUco marker position in the parent frame, in meters'
     )
