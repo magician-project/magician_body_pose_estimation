@@ -57,7 +57,9 @@ sys.path = [p for p in sys.path if os.path.realpath(p or '.') != _script_dir_rea
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-from skeleton_msgs.msg import Skeletons, Skeleton, Joint3D
+#from skeleton_msgs.msg import Skeletons, Skeleton, Joint3D
+from magician_body_pose_estimation.msg import Skeletons, Skeleton, Joint3D
+
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Float64
 import tf2_ros
@@ -156,6 +158,7 @@ class PoseEstimationNode(Node):
         
         self.args = args
         self.get_logger().info('Initializing D-PoSE Webcam Node...')
+        self._log_intrinsics()
         
         # Setup logging
         self._setup_logging()
@@ -412,7 +415,10 @@ class PoseEstimationNode(Node):
                         f'{self._frames_with_detection}/{self._frames_total} frames.'
                     )
                     self._detection_was_active = True
-                hmr_output = self.tester.run_on_single_image_tensor(frame, detection, render=self.args.render)
+                hmr_output = self.tester.run_on_single_image_tensor(
+                    frame, detection, render=self.args.render,
+                    fl=(self.args.fx, self.args.fy),
+                )
                 return track_bbs_ids, hmr_output
             else:
                 if self._detection_was_active:
@@ -447,7 +453,7 @@ class PoseEstimationNode(Node):
                     2,
                     cv2.LINE_AA,
                 )
-                cv2.imshow('front', display_bgr)
+                cv2.imshow('D-Pose', display_bgr)
 
         return None, None
 
@@ -468,17 +474,16 @@ class PoseEstimationNode(Node):
         
         current_time = self.get_clock().now().to_msg()
         
-        marker_R = None
-        marker_t = None
-        if self.args.use_aruco:
-            if self.first_rvec is None or self.first_tvec is None:
-                self.get_logger().warning(
-                    'No ArUco marker pose yet, not publishing skeletons',
-                    throttle_duration_sec=2.0,
-                )
-                return
-            marker_R = cv2.Rodrigues(self.first_rvec)[0]
-            marker_t = self.first_tvec.reshape(3)
+        # Joints are always published in the 'Camera' frame.  --use-aruco ties
+        # that camera frame to the marker (see publish_aruco_transforms); it does
+        # not gate the skeletons, so a missing marker costs the camera<->marker
+        # link only, not the pose output.
+        if self.args.use_aruco and (self.first_rvec is None or self.first_tvec is None):
+            self.get_logger().warning(
+                'No ArUco marker pose yet; publishing skeletons in the raw camera '
+                'frame until the marker is seen',
+                throttle_duration_sec=5.0,
+            )
         
         for i in range(len(track_bbs_ids)):
             human = Skeleton()
@@ -513,6 +518,32 @@ class PoseEstimationNode(Node):
         # Publish the skeleton message
         self.skeleton_publisher.publish(skeletons_msg)
 
+    def _log_intrinsics(self):
+        """Report the intrinsics actually in use, and flag what is only assumed."""
+        a = self.args
+        self.get_logger().info(
+            f'Camera intrinsics: fx={a.fx:.2f} fy={a.fy:.2f} '
+            f'cx={a.cx:.2f} cy={a.cy:.2f} for {a.width}x{a.height} '
+            f'({"estimated from frame diagonal" if a.intrinsics_estimated else "given"})'
+        )
+        if a.intrinsics_estimated:
+            self.get_logger().warning(
+                'No --fx/--fy given, so the focal length is the image diagonal. '
+                'That is a guess: it sets the metric depth of every joint, so '
+                'calibrate the camera if the skeleton sits at the wrong distance.'
+            )
+        # D-PoSE builds its intrinsics with the principal point pinned to the
+        # image centre (hmr.py) and convert_pare_to_full_img_cam offsets the
+        # person by (bbox_centre - img/2) as well, so a non-central principal
+        # point reaches ArUco but not the pose model.
+        if abs(a.cx - a.width / 2.0) > 1.0 or abs(a.cy - a.height / 2.0) > 1.0:
+            self.get_logger().warning(
+                f'Principal point ({a.cx:.1f}, {a.cy:.1f}) is not the image centre '
+                f'({a.width / 2:.1f}, {a.height / 2:.1f}). ArUco honours it; D-PoSE '
+                'pins the principal point to the image centre, so the skeleton '
+                'keeps a small lateral bias.'
+            )
+
     def _publish_joint_transform(self, timestamp, human_id, joint_id, joint):
         """
         Publish TF transform for a joint.
@@ -532,8 +563,11 @@ class PoseEstimationNode(Node):
         t.transform.translation.y = joint.y
         t.transform.translation.z = joint.z
         
-        # Set orientation (assuming no rotation for joints)
-        t.transform.rotation.x = -1.0
+        # Set orientation (no rotation for joints: the joint frame keeps the
+        # camera frame's axes).  This has to be a unit quaternion -- the old
+        # (x=-1, y=0, z=0, w=1) had norm sqrt(2) and normalised to a -90 deg
+        # roll about X, silently tilting every published joint frame.
+        t.transform.rotation.x = 0.0
         t.transform.rotation.y = 0.0
         t.transform.rotation.z = 0.0
         t.transform.rotation.w = 1.0
@@ -932,10 +966,25 @@ def parse_arguments():
     )
     
     # Camera intrinsics (used for ArUco pose estimation, at --width x --height)
-    parser.add_argument('--fx', type=float, default=800.0, help='Camera focal length x in pixels')
-    parser.add_argument('--fy', type=float, default=800.0, help='Camera focal length y in pixels')
-    parser.add_argument('--cx', type=float, default=320.0, help='Camera principal point x in pixels')
-    parser.add_argument('--cy', type=float, default=240.0, help='Camera principal point y in pixels')
+    parser.add_argument(
+        '--fx', type=float, default=None,
+        help='Camera focal length x in pixels. Sets both the ArUco pose and the '
+             'metric depth of the skeleton, so an uncalibrated guess here moves '
+             'the whole skeleton. Default: the image diagonal, which is what '
+             'D-PoSE assumes when it is not told otherwise'
+    )
+    parser.add_argument(
+        '--fy', type=float, default=None,
+        help='Camera focal length y in pixels. Default: same as --fx'
+    )
+    parser.add_argument(
+        '--cx', type=float, default=None,
+        help='Camera principal point x in pixels. Default: --width / 2'
+    )
+    parser.add_argument(
+        '--cy', type=float, default=None,
+        help='Camera principal point y in pixels. Default: --height / 2'
+    )
     parser.add_argument(
         '--dist-coeffs', type=float, nargs='+', default=None,
         metavar='K',
@@ -971,7 +1020,33 @@ def parse_arguments():
     parser.add_argument('--dataframe-path', type=str, default='data/ssp_3d_test.npz', help=argparse.SUPPRESS)
     parser.add_argument('--data-split', type=str, default='test', help=argparse.SUPPRESS)
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    resolve_intrinsics(args)
+    return args
+
+
+def resolve_intrinsics(args):
+    """Fill in any camera intrinsics that were not given on the command line.
+
+    The focal length is what ties the skeleton to the camera frame: D-PoSE turns
+    the weak-perspective camera into a metric one with tz ~ focal_length (see
+    convert_pare_to_full_img_cam), and solvePnP scales the marker pose the same
+    way.  Both sides therefore have to be handed the *same* focal length, and
+    the fallback matches D-PoSE's own estimate so an unspecified camera behaves
+    exactly as before.
+    """
+    args.intrinsics_estimated = args.fx is None and args.fy is None
+    if args.fx is None and args.fy is None:
+        args.fx = args.fy = (args.width ** 2 + args.height ** 2) ** 0.5
+    elif args.fy is None:
+        args.fy = args.fx
+    elif args.fx is None:
+        args.fx = args.fy
+    if args.cx is None:
+        args.cx = args.width / 2.0
+    if args.cy is None:
+        args.cy = args.height / 2.0
+    return args
 
 
 def validate_requirements():
