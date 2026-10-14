@@ -457,7 +457,7 @@ class PoseEstimationNode(Node):
 
         return None, None
 
-    def publish_skeletons(self, track_bbs_ids, hmr_output, tf_all=True):
+    def publish_skeletons(self, track_bbs_ids, hmr_output, tf_all=False):
         """
         Publish skeleton data to ROS topic.
         
@@ -791,7 +791,7 @@ class PoseEstimationNode(Node):
                 
                 if track_bbs_ids is not None and hmr_output is not None:
                     # Publish skeleton data
-                    self.publish_skeletons(track_bbs_ids, hmr_output)
+                    self.publish_skeletons(track_bbs_ids, hmr_output, tf_all=self.args.tf_all)
                 
                 # Pump the OpenCV event loop so the 'front' window (managed by D-PoSE
                 # tester) actually refreshes on screen.
@@ -1019,6 +1019,12 @@ def parse_arguments():
         help='Input image size for YOLO detector'
     )
     
+    parser.add_argument(
+        '--tf-all', action='store_true',
+        help='Publish a TF frame for every joint, not just the root (pelvis). The '
+             'non-root frames are children of the root frame'
+    )
+
     #Render 3d Mesh
     parser.add_argument(
         '--render', action='store_true',
