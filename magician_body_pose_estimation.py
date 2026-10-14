@@ -673,8 +673,15 @@ class PoseEstimationNode(Node):
             t.transform.translation.y = float(t_inv[1])
             t.transform.translation.z = float(t_inv[2])
             
+            # solvePnP works in OpenCV optical axes (X right, Y down, Z forward),
+            # so re-base the orientation to the ROS convention (X forward, Y left,
+            # Z up) before publishing. The origin is the same either way.
+            R_optical_from_body = np.array([[0.0, -1.0, 0.0],
+                                            [0.0, 0.0, -1.0],
+                                            [1.0, 0.0, 0.0]])
+
             # Convert rotation matrix to quaternion
-            quat = rotmat_to_quat(R_inv)
+            quat = rotmat_to_quat(R_inv @ R_optical_from_body)
             t.transform.rotation.x = float(quat[1])
             t.transform.rotation.y = float(quat[2])
             t.transform.rotation.z = float(quat[3])

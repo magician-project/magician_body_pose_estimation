@@ -140,7 +140,7 @@ The CSV contains one row per skeleton per frame, with columns `frame_id`, `skele
 
 The node publishes a TF transform from `Camera` → `human_<id>` for each tracked person. The orientation is derived from the pelvis, hips, and neck joints.
 
-When `--use-aruco` is active, additional transforms are published: `<aruco-parent-frame>` → `Aruco_marker` → `Camera`. The `/humans` joints and the `human_<id>` frames are then expressed in the `Aruco_marker` frame (X right, Y up along the printed marker, Z out of the marker), and no skeletons are published until the marker has been seen.
+When `--use-aruco` is active, additional transforms are published: `<aruco-parent-frame>` → `Aruco_marker` → `Camera`. The `/humans` joints and the `human_<id>` frames are then expressed in the `Aruco_marker` frame (X right, Y up along the printed marker, Z out of the marker), and no skeletons are published until the marker has been seen. `Camera` follows the ROS convention (X forward, Y left, Z up), not the OpenCV optical one.
 
 ### Skeleton Messages
 
