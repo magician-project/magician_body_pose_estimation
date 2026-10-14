@@ -457,7 +457,7 @@ class PoseEstimationNode(Node):
 
         return None, None
 
-    def publish_skeletons(self, track_bbs_ids, hmr_output):
+    def publish_skeletons(self, track_bbs_ids, hmr_output, tf_all=True):
         """
         Publish skeleton data to ROS topic.
         
@@ -506,11 +506,18 @@ class PoseEstimationNode(Node):
                 human.joints.append(joint3d)
                 
 
-                # Publish TF transform for the root joint (pelvis)
-                if j == 0:
-                     self._publish_joint_transform(
-                         current_time, human.id, j, joint3d
-                     )
+                # Publish TF transform for the root joint (pelvis) OR everything if needed.
+                # joint3d is absolute (camera frame) only for j == 0; every other
+                # joint was measured from the root just above, so it is published
+                # as a child of the root frame rather than of 'Camera'.  Parenting
+                # a root-relative offset to 'Camera' would pile all the joints up
+                # around the camera origin instead of on the body.
+                if (j == 0 or tf_all):
+                     if j==0:
+                       parent='Camera'
+                     else:
+                       parent=f'human_{human.id}_joint_0'  
+                     self._publish_joint_transform( current_time, human.id, j, joint3d, parent_frame=parent )
 
             self._publish_human_camera_transform(current_time, human.id, human)
             skeletons_msg.humans.append(human)
@@ -544,7 +551,8 @@ class PoseEstimationNode(Node):
                 'keeps a small lateral bias.'
             )
 
-    def _publish_joint_transform(self, timestamp, human_id, joint_id, joint):
+    def _publish_joint_transform(self, timestamp, human_id, joint_id, joint,
+                                 parent_frame='Camera'):
         """
         Publish TF transform for a joint.
         
@@ -552,11 +560,14 @@ class PoseEstimationNode(Node):
             timestamp: ROS timestamp
             human_id: Human ID
             joint_id: Joint ID
-            joint: Joint3D message
+            joint: Joint3D message, in the coordinates of parent_frame
+            parent_frame: frame the joint coordinates are expressed in. Only the
+                root joint is in the camera frame; every other joint is measured
+                from the root, so it has to hang off the root's frame.
         """
         t = TransformStamped()
         t.header.stamp = timestamp
-        t.header.frame_id = 'Camera'
+        t.header.frame_id = parent_frame
         t.child_frame_id = f'human_{human_id}_joint_{joint_id}'
         
         t.transform.translation.x = joint.x
