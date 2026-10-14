@@ -489,12 +489,11 @@ class PoseEstimationNode(Node):
             # (OpenCV axes: x right, y down, z forward)
             joints = hmr_joints[i] + camera_translation[i]
 
-            # Express joints w.r.t. the ArUco marker: p_marker = R^T (p_camera - t)
-            if marker_R is not None:
-                joints = (joints - marker_t) @ marker_R
+            joints = joints[:, [2, 0, 1]] * np.array([1.0, -1.0, -1.0])
 
             # Convert joints to ROS message format
             for j, joint in enumerate(joints):
+                joint = joint if j == 0 else joint - joints[0]
                 joint3d = Joint3D()
                 joint3d.x = float(joint[0])
                 joint3d.y = float(joint[1])
@@ -503,10 +502,10 @@ class PoseEstimationNode(Node):
                 
 
                 # Publish TF transform for the root joint (pelvis)
-                # if j == 0:
-                #     self._publish_joint_transform(
-                #         current_time, human.id, j, joint3d
-                #     )
+                if j == 0:
+                     self._publish_joint_transform(
+                         current_time, human.id, j, joint3d
+                     )
 
             self._publish_human_camera_transform(current_time, human.id, human)
             skeletons_msg.humans.append(human)
@@ -553,7 +552,7 @@ class PoseEstimationNode(Node):
         """
         t = TransformStamped()
         t.header.stamp = timestamp
-        t.header.frame_id = 'Aruco_marker' if self.args.use_aruco else 'Camera'
+        t.header.frame_id = 'Camera'
         # t.child_frame_id = f'human_{human_id}_joint_{joint_id}'
         t.child_frame_id = f'human_{human_id}'
         
@@ -566,7 +565,7 @@ class PoseEstimationNode(Node):
         right_hip = np.array([human.joints[2].x, human.joints[2].y, human.joints[2].z])
         neck = np.array([human.joints[12].x, human.joints[12].y, human.joints[12].z])
 
-        z_axis = neck-pelvis
+        z_axis = neck
         z_axis /= np.linalg.norm(z_axis)
 
         x_axis = right_hip - left_hip
