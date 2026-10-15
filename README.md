@@ -66,15 +66,18 @@ bash src/magician_body_pose_estimation/scripts/runROSBodyPoseEstimation.sh
 | `--width` | `1920` | Camera capture width in pixels |
 | `--height` | `1080` | Camera capture height in pixels |
 | `--fps` | `15` | Camera capture frame rate |
-| `--render` | off | Render the 3D mesh overlay in the OpenCV window |
-| `--display` | off | Show real-time video window (press `q` to quit) |
+| `--framelimit` | `0` (every frame) | Cap how many frames per second are actually processed, independently of `--fps`. Surplus frames are dropped without being decoded |
+| `--render` | off | Render the 3D mesh overlay in the OpenCV window (needs `--display` to be visible) |
+| `--display` | off | Show the real-time video window (press `q` to quit). Without it no window is ever opened |
+| `--visualization-scale` | `0.5` | Scale the `--display` window so it takes up less screen space. Only the window is resized; pose estimation still runs on the full-resolution frame |
 | `--use-aruco` / `--no-use-aruco` | on | Enable ArUco marker detection for camera-to-world calibration. Skeletons are then published w.r.t. the marker |
 | `--aruco-marker-id` | any | Only use this marker ID (`DICT_6X6_250`) as the skeleton reference |
 | `--aruco-marker-length` | `0.15` | Printed marker side length in meters |
-| `--aruco-parent-frame` | `wood_panel` | TF parent frame the marker is mounted on |
-| `--aruco-xyz` | `0.1055 1.405 -0.1025` | Marker position in the parent frame (m) |
+| `--aruco-parent-frame` | `base_link` | TF parent frame the marker is mounted on |
+| `--aruco-xyz` | `0.1055 0.405 -0.1025` | Marker position in the parent frame (m) |
 | `--aruco-rpy` | `90 0 180` | Marker orientation in the parent frame (deg, fixed-axis roll X, pitch Y, yaw Z) |
-| `--fx` `--fy` `--cx` `--cy` | `800 800 320 240` | Camera intrinsics in pixels at `--width` x `--height` (ArUco pose) |
+| `--fx` `--fy` | image diagonal (≈2203 at 1920x1080) | Camera focal length in pixels at `--width` x `--height`. Sets both the ArUco pose and the metric depth of the skeleton, so an uncalibrated guess here moves the whole skeleton. The default is what D-PoSE assumes when it is not told otherwise |
+| `--cx` `--cy` | `--width / 2`, `--height / 2` | Camera principal point in pixels |
 | `--dist-coeffs` | none | Lens distortion coefficients `k1 k2 p1 p2 [k3 ...]` |
 | `--static-camera` | off | Camera never moves: average marker observations per slider position, skip detection once converged, and keep publishing through occlusion |
 | `--static-robot` | off | Robot never moves along its slider: average everything into one position, no slider topic needed |
@@ -89,8 +92,12 @@ bash src/magician_body_pose_estimation/scripts/runROSBodyPoseEstimation.sh
 | `--marker-alarm-pct` | `5.0` | After loading from disk, warn while live observations disagree by more than this percentage of the marker distance |
 | `--insist-camera` | off | Retry camera initialization indefinitely (3 s between attempts) |
 | `--detection-threshold` | `0.7` | Person detection confidence threshold (0.0–1.0) |
+| `--tracker-batch-size` | `1` | Batch size for the object detector used for bbox tracking |
 | `--detector` | `yolo` | Object detector (`yolo` or `maskrcnn`) |
 | `--yolo-img-size` | `256` | YOLO input image size |
+| `--tf-all` | off | Publish a TF frame for every joint, not just the root (pelvis). The non-root frames are children of the root frame |
+| `--gpu-mem-fraction` | `0` (uncapped) | Cap the share of total GPU memory this process may allocate (0.0–1.0), leaving headroom for a co-running torch service. Exceeding it raises an out-of-memory error instead of growing |
+| `--threads` | `0` (all cores) | Cap the CPU threads used by torch and OpenCV. OpenCV is capped separately because its MJPG decode and resize ignore the torch setting |
 | `--cfg` | `D-PoSE/configs/dpose_conf.yaml` | D-PoSE model config file |
 | `--ckpt` | `D-PoSE/data/ckpt/paper_arxiv.ckpt` | D-PoSE model checkpoint |
 | `--output-folder` | `./logs` | Directory for log files |
@@ -105,6 +112,23 @@ python3 magician_body_pose_estimation.py \
     --insist-camera \
     --detection-threshold 0.5
 ```
+
+### Sharing the Machine With Other Services
+
+The node runs headless unless `--display` is passed, and `--framelimit`,
+`--gpu-mem-fraction` and `--threads` bound what it consumes, so it can coexist
+with another torch service (e.g. `magician_vision_classifier`) on the same host:
+
+```bash
+python3 magician_body_pose_estimation.py \
+    --input /dev/video0 \
+    --fps 30 --framelimit 5 \
+    --gpu-mem-fraction 0.5 \
+    --threads 4
+```
+
+The camera still streams at 30 FPS so the frames that are processed are fresh,
+but only 5 per second go through detection and pose estimation.
 
 ## Exporting Pose Data to CSV
 

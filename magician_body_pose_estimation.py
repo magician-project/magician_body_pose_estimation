@@ -305,10 +305,20 @@ class PoseEstimationNode(Node):
             
             self.frame_number = 0
             self.get_logger().info('Person tracker initialized successfully!')
-            if not self.args.render:
+            if not self.args.display:
+                self.get_logger().info(
+                    '--display was not passed: no window is shown. '
+                    'Pass --display to see the OpenCV window.'
+                )
+                if self.args.render:
+                    self.get_logger().warning(
+                        '--render without --display: the 3D mesh is rendered but '
+                        'never shown, which costs GPU time for nothing.'
+                    )
+            elif not self.args.render:
                 self.get_logger().warning(
                     '--render was not passed: 3D mesh overlay is DISABLED. '
-                    "Pass --render to see the rendered skeleton in the 'front' OpenCV window."
+                    "Pass --render to see the rendered skeleton in the 'D-Pose' OpenCV window."
                 )
             
         except Exception as e:
@@ -418,6 +428,8 @@ class PoseEstimationNode(Node):
                 hmr_output = self.tester.run_on_single_image_tensor(
                     frame, detection, render=self.args.render,
                     fl=(self.args.fx, self.args.fy),
+                    display=self.args.display,
+                    display_scale=self.args.visualization_scale,
                 )
                 return track_bbs_ids, hmr_output
             else:
@@ -442,18 +454,26 @@ class PoseEstimationNode(Node):
                         f'{self._frames_with_detection}/{self._frames_total} frames had a human.'
                     )
                     self._last_stats_log = now
-                display_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                cv2.putText(
-                    display_bgr,
-                    'No human detected',
-                    (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.2,
-                    (0, 0, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-                cv2.imshow('D-Pose', display_bgr)
+                if self.args.display:
+                    display_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    if self.args.visualization_scale != 1.0:
+                        display_bgr = cv2.resize(
+                            display_bgr, None,
+                            fx=self.args.visualization_scale,
+                            fy=self.args.visualization_scale,
+                            interpolation=cv2.INTER_AREA,
+                        )
+                    cv2.putText(
+                        display_bgr,
+                        'No human detected',
+                        (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.2,
+                        (0, 0, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    cv2.imshow('D-Pose', display_bgr)
 
         return None, None
 
@@ -738,10 +758,40 @@ class PoseEstimationNode(Node):
         Main processing loop.
         """
         self.get_logger().info('Starting pose estimation loop...')
-        self.get_logger().info('Press "q" in the OpenCV window to quit')
+        if self.args.display:
+            self.get_logger().info('Press "q" in the OpenCV window to quit')
+
+        # --framelimit caps how often the pipeline runs, independently of the
+        # rate the camera delivers at (--fps).
+        frame_interval = 1.0 / self.args.framelimit if self.args.framelimit > 0 else 0.0
+        if frame_interval > 0.0:
+            self.get_logger().info(
+                f'Processing limited to {self.args.framelimit} frame(s)/s '
+                f'(camera runs at {self.args.fps} FPS; surplus frames are dropped)'
+            )
+        next_process_time = 0.0
         
         try:
             while rclpy.ok():
+                # Pumped at the top of the iteration so a frame dropped by
+                # --framelimit below still refreshes the window and serves ROS
+                # callbacks before the loop continues.
+                rclpy.spin_once(self, timeout_sec=0.001)
+                if self.args.display and cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.get_logger().info('Quit requested by user')
+                    break
+
+                now = time.monotonic()
+                if now < next_process_time:
+                    # Too early: grab() pulls the frame off the driver queue so
+                    # the capture buffer stays current, but skips the retrieve
+                    # and its JPEG decode, which is the expensive part.
+                    if not self.cap.grab():
+                        self.get_logger().error('Failed to capture frame from camera')
+                        break
+                    continue
+                next_process_time = now + frame_interval
+
                 # Capture frame
                 ret, frame = self.cap.read()
                 if not ret:
@@ -792,13 +842,6 @@ class PoseEstimationNode(Node):
                 if track_bbs_ids is not None and hmr_output is not None:
                     # Publish skeleton data
                     self.publish_skeletons(track_bbs_ids, hmr_output, tf_all=self.args.tf_all)
-                
-                # Pump the OpenCV event loop so the 'front' window (managed by D-PoSE
-                # tester) actually refreshes on screen.
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    self.get_logger().info('Quit requested by user')
-                    break
-                rclpy.spin_once(self, timeout_sec=0.001)
                 
         except KeyboardInterrupt:
             self.get_logger().info('Interrupted by user')
@@ -865,6 +908,12 @@ def parse_arguments():
     
     # Processing configuration
     parser.add_argument(
+        '--framelimit', type=float, default=0.0,
+        help='Cap how many frames per second are actually processed, regardless of '
+             'the rate the camera delivers at (--fps). Frames arriving in between are '
+             'dropped without being decoded. Default: 0, process every frame'
+    )
+    parser.add_argument(
         '--detection-threshold', type=float, default=0.7,
         help='Confidence threshold for person detection (0.0-1.0)'
     )
@@ -877,6 +926,12 @@ def parse_arguments():
     parser.add_argument(
         '--display', action='store_true',
         help='Show real-time video window (press "q" to quit)'
+    )
+    parser.add_argument(
+        '--visualization-scale', type=float, default=0.5,
+        help='Scale the --display window by this factor so it takes up less screen '
+             'space. Only the window is resized; pose estimation still runs on the '
+             'full-resolution frame'
     )
     parser.add_argument(
         '--output-folder', type=str, default='./logs',
@@ -1009,6 +1064,21 @@ def parse_arguments():
         help='Retry camera initialization indefinitely (3 s delay between attempts) until it succeeds'
     )
     
+    # Resource limits (this node shares the machine with other torch services)
+    parser.add_argument(
+        '--gpu-mem-fraction', type=float, default=0.0,
+        help='Cap the share of total GPU memory this process may allocate '
+             '(0.0-1.0), so a co-running torch service keeps its headroom. '
+             'Exceeding it raises an out-of-memory error instead of growing. '
+             'Default: 0, uncapped'
+    )
+    parser.add_argument(
+        '--threads', type=int, default=0,
+        help='Cap the CPU threads used by torch and OpenCV. OpenCV is capped '
+             'separately from torch because its MJPG decode and resize ignore the '
+             'torch setting. Default: 0, use every core'
+    )
+
     # Detector configuration (for compatibility)
     parser.add_argument(
         '--detector', type=str, default='yolo', choices=['yolo', 'maskrcnn'],
@@ -1066,6 +1136,32 @@ def resolve_intrinsics(args):
     return args
 
 
+def apply_resource_limits(args):
+    """Apply the --gpu-mem-fraction and --threads caps.
+
+    Called before the model is loaded: the GPU cap has to be in place before the
+    allocator grows, and the thread caps before the first parallel op runs.
+    """
+    if args.threads > 0:
+        torch.set_num_threads(args.threads)
+        cv2.setNumThreads(args.threads)
+        try:
+            torch.set_num_interop_threads(args.threads)
+        except RuntimeError:
+            # Already fixed by an earlier parallel op; the intra-op cap above
+            # is the one that bounds the heavy work anyway.
+            pass
+        print(f"CPU threads capped at {args.threads} (torch and OpenCV)")
+
+    if args.gpu_mem_fraction > 0.0 and torch.cuda.is_available():
+        torch.cuda.set_per_process_memory_fraction(args.gpu_mem_fraction)
+        total_gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+        print(
+            f"GPU memory capped at {args.gpu_mem_fraction:.0%} of {total_gb:.1f} GiB "
+            f"({args.gpu_mem_fraction * total_gb:.1f} GiB)"
+        )
+
+
 def validate_requirements():
     """Validate that all requirements are met."""
     errors = []
@@ -1108,6 +1204,8 @@ def main():
     if not validate_requirements():
         return 1
     
+    apply_resource_limits(args)
+
     # Initialize ROS2
     rclpy.init()
     
