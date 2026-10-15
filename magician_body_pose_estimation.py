@@ -57,8 +57,8 @@ sys.path = [p for p in sys.path if os.path.realpath(p or '.') != _script_dir_rea
 # ROS2 imports
 import rclpy
 from rclpy.node import Node
-#from skeleton_msgs.msg import Skeletons, Skeleton, Joint3D
-from magician_body_pose_estimation.msg import Skeletons, Skeleton, Joint3D
+from skeleton_msgs.msg import Skeletons, Skeleton, Joint3D
+#from magician_body_pose_estimation.msg import Skeletons, Skeleton, Joint3D
 
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Float64
