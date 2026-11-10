@@ -449,7 +449,7 @@ class PoseEstimationNode(Node):
                     2,
                     cv2.LINE_AA,
                 )
-                cv2.imshow('front', display_bgr)
+                cv2.imshow('D-Pose', display_bgr)
 
         return None, None
 
@@ -683,7 +683,7 @@ class PoseEstimationNode(Node):
                 # Display frame (optional)
                 if self.args.display:
                     display_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                    cv2.imshow('D-PoSE Webcam Demo', display_frame)
+                    cv2.imshow('D-Pose', display_frame)
                     
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         self.get_logger().info('Quit requested by user')

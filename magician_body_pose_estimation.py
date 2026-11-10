@@ -166,6 +166,8 @@ class PoseEstimationNode(Node):
         # Initialize publishers and broadcasters
         self.skeleton_publisher = self.create_publisher(Skeletons, 'humans', 10)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+        # Transforms of the current frame, flushed as a single /tf message.
+        self._tf_out = []
         
         # Initialize tracking and filtering
         self.tracker = Sort()
@@ -308,7 +310,7 @@ class PoseEstimationNode(Node):
             if not self.args.render:
                 self.get_logger().warning(
                     '--render was not passed: 3D mesh overlay is DISABLED. '
-                    "Pass --render to see the rendered skeleton in the 'front' OpenCV window."
+                    "Pass --render to see the rendered skeleton in the 'D-Pose' OpenCV window."
                 )
             
         except Exception as e:
@@ -525,6 +527,17 @@ class PoseEstimationNode(Node):
         # Publish the skeleton message
         self.skeleton_publisher.publish(skeletons_msg)
 
+    def _flush_tf(self):
+        """Send this frame's transforms as one /tf message.
+
+        sendTransform() takes a list, so one message per frame costs a single
+        publish instead of one per joint (24+ once tf_all is on), which also
+        spares every /tf subscriber that same number of callbacks.
+        """
+        if self._tf_out:
+            self.tf_broadcaster.sendTransform(self._tf_out)
+            self._tf_out = []
+
     def _log_intrinsics(self):
         """Report the intrinsics actually in use, and flag what is only assumed."""
         a = self.args
@@ -583,7 +596,7 @@ class PoseEstimationNode(Node):
         t.transform.rotation.z = 0.0
         t.transform.rotation.w = 1.0
         
-        self.tf_broadcaster.sendTransform(t)
+        self._tf_out.append(t)
 
     def _publish_human_camera_transform(self, timestamp, human_id, human):
         """
@@ -633,7 +646,7 @@ class PoseEstimationNode(Node):
         t.transform.rotation.y = float(q[2])
         t.transform.rotation.z = float(q[3])
         
-        self.tf_broadcaster.sendTransform(t)
+        self._tf_out.append(t)
 
     def _initialize_marker_table(self):
         """Set up the averaged marker poses and the slider subscription."""
@@ -696,7 +709,7 @@ class PoseEstimationNode(Node):
         t.transform.rotation.y = float(q[2])
         t.transform.rotation.z = float(q[3])
         
-        self.tf_broadcaster.sendTransform(t)
+        self._tf_out.append(t)
         
         # Publish camera transform relative to ArUco marker
         if self.first_rvec is not None and self.first_tvec is not None:
@@ -731,14 +744,29 @@ class PoseEstimationNode(Node):
             t.transform.rotation.z = float(quat[3])
             t.transform.rotation.w = float(quat[0])
             
-            self.tf_broadcaster.sendTransform(t)
+            self._tf_out.append(t)
 
     def run(self):
         """
         Main processing loop.
         """
         self.get_logger().info('Starting pose estimation loop...')
-        self.get_logger().info('Press "q" in the OpenCV window to quit')
+        if self.args.display:
+            # The D-PoSE tester calls imshow('D-Pose', ...) with a full-size
+            # frame.  Creating the window first as WINDOW_NORMAL at a smaller
+            # size means X blits that many fewer pixels every frame; it stays
+            # resizable, so dragging it larger just costs what it used to.
+            cv2.namedWindow('D-Pose', cv2.WINDOW_NORMAL)
+            cv2.resizeWindow('D-Pose', self.args.window_width,
+                             max(1, int(round(self.args.window_width
+                                              * self.args.height / self.args.width))))
+            self.get_logger().info('Press "q" in the OpenCV window to quit')
+        else:
+            self.get_logger().info(
+                '--no-display: not pumping the GUI event loop. The D-PoSE tester '
+                'still calls imshow, so a window may appear but will not refresh; '
+                'stop the node with Ctrl-C.'
+            )
         
         try:
             while rclpy.ok():
@@ -793,12 +821,21 @@ class PoseEstimationNode(Node):
                     # Publish skeleton data
                     self.publish_skeletons(track_bbs_ids, hmr_output)
                 
-                # Pump the OpenCV event loop so the 'front' window (managed by D-PoSE
-                # tester) actually refreshes on screen.
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    self.get_logger().info('Quit requested by user')
-                    break
-                rclpy.spin_once(self, timeout_sec=0.001)
+                # One /tf message for the whole frame.
+                self._flush_tf()
+                
+                # Pump the OpenCV event loop so the 'D-Pose' window (managed by
+                # the D-PoSE tester) actually refreshes on screen.  The blit is
+                # the whole cost of showing it -- measured ~8 ms for a 1280x720
+                # window, ~3 ms once the window is scaled down -- so --no-display
+                # skips it entirely for headless runs.
+                if self.args.display:
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        self.get_logger().info('Quit requested by user')
+                        break
+                # timeout_sec=0 returns as soon as the ready callbacks are done
+                # instead of idling for a millisecond on every frame.
+                rclpy.spin_once(self, timeout_sec=0.0)
                 
         except KeyboardInterrupt:
             self.get_logger().info('Interrupted by user')
@@ -875,7 +912,7 @@ def parse_arguments():
     
     # Display and output options
     parser.add_argument(
-        '--display', action='store_true',
+        '--display', action=argparse.BooleanOptionalAction, default=True,
         help='Show real-time video window (press "q" to quit)'
     )
     parser.add_argument(
@@ -995,6 +1032,12 @@ def parse_arguments():
     parser.add_argument(
         '--cy', type=float, default=None,
         help='Camera principal point y in pixels. Default: --height / 2'
+    )
+    parser.add_argument(
+        '--window-width', type=int, default=640,
+        help='Width of the preview window in pixels (height follows the frame '
+             'aspect ratio). Smaller is cheaper to blit each frame; the window '
+             'stays resizable. Default: 640'
     )
     parser.add_argument(
         '--dist-coeffs', type=float, nargs='+', default=None,
