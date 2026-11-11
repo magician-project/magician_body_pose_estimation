@@ -463,6 +463,8 @@ class PoseEstimationNode(Node):
                             fy=self.args.visualization_scale,
                             interpolation=cv2.INTER_AREA,
                         )
+                    if self.args.mirror:
+                        display_bgr = cv2.flip(display_bgr, 1)
                     cv2.putText(
                         display_bgr,
                         'No human detected',
@@ -1099,6 +1101,11 @@ def parse_arguments():
     parser.add_argument(
         '--render', action='store_true',
         help='Render the 3D mesh on the OpenCV window'
+    )
+    parser.add_argument(
+        '--mirror', action='store_true',
+        help='Horizontally flip the D-Pose OpenCV window (display only; '
+             'published poses and saved images are unaffected)'
     )
     
     # Deprecated/unused options (kept for compatibility)
